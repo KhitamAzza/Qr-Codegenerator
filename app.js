@@ -124,7 +124,7 @@ function generateQR() {
 
 async function connectPrinter() {
     if (!navigator.bluetooth) {
-        showToast('Web Bluetooth not supported. Use Chrome on Android or Desktop.', 'error');
+        showToast('Web Bluetooth not supported. Use Chrome on Android.', 'error');
         return;
     }
 
@@ -134,20 +134,48 @@ async function connectPrinter() {
             <p>Select your printer from the list...</p>
         `;
 
-        // FIX: Removed 'filters'. Using 'acceptAllDevices: true' is required for generic thermal printers
+        // Mirror of your working bluetooth.js
         const device = await navigator.bluetooth.requestDevice({
             acceptAllDevices: true,
             optionalServices: [
-                '00001101-0000-1000-8000-00805f9b34fb', // Standard Serial Port Profile (SPP)
-                '0000fff0-0000-1000-8000-00805f9b34fb', // Common thermal printer service
-                '0000ffe0-0000-1000-8000-00805f9b34fb', // Another common thermal printer service
-                'battery_service',
-                'device_information'
+                '000018f0-0000-1000-8000-00805f9b34fb',
+                '0000ff00-0000-1000-8000-00805f9b34fb',
+                'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+                '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+                '0000fee7-0000-1000-8000-00805f9b34fb',
+                '00001101-0000-1000-8000-00805f9b34fb', // SPP
+                '0000fff0-0000-1000-8000-00805f9b34fb',
+                '0000ffe0-0000-1000-8000-00805f9b34fb'
             ]
         });
 
+        elements.displays.printerStatus.innerHTML = `
+            <div class="loading"></div>
+            <p>Connecting to ${device.name || 'Printer'}...</p>
+        `;
+
+        const server = await device.gatt.connect();
+        state.printer = server;
         state.printerDevice = device;
-        
+
+        // Verify writable characteristic exists (just like your working code)
+        const services = await server.getPrimaryServices();
+        let targetChar = null;
+        for (const service of services) {
+            const chars = await service.getCharacteristics();
+            for (const char of chars) {
+                if (char.properties.write || char.properties.writeWithoutResponse) {
+                    targetChar = char;
+                    break;
+                }
+            }
+            if (targetChar) break;
+        }
+
+        if (!targetChar) {
+            throw new Error('Printer does not support write characteristic');
+        }
+
         device.addEventListener('gattserverdisconnected', () => {
             state.printer = null;
             state.printerDevice = null;
@@ -160,29 +188,25 @@ async function connectPrinter() {
             `;
         });
 
-        const server = await device.gatt.connect();
-        state.printer = server;
-
         elements.displays.printerStatus.innerHTML = `
             <div class="status-icon">✅</div>
-            <p>Printer connected successfully!</p>
+            <p>Connected: ${device.name || 'Unknown Printer'}</p>
         `;
         elements.displays.printerInfo.style.display = 'block';
         elements.displays.printerName.textContent = device.name || 'Unknown Printer';
         elements.buttons.printConfirm.style.display = 'block';
         elements.buttons.connect.style.display = 'none';
 
-        showToast('Connected to printer!', 'success');
+        showToast('Printer connected successfully!', 'success');
 
     } catch (error) {
         console.error('Bluetooth connection error:', error);
-        // If user cancels the prompt, don't show an error toast
         if (error.name !== 'NotFoundError') {
             elements.displays.printerStatus.innerHTML = `
                 <div class="status-icon">❌</div>
-                <p>Connection failed. Please try again.</p>
+                <p>Connection failed: ${error.message}</p>
             `;
-            showToast('Failed to connect to printer', 'error');
+            showToast('Failed to connect: ' + error.message, 'error');
         } else {
             elements.displays.printerStatus.innerHTML = `
                 <div class="status-icon">🔍</div>
@@ -190,6 +214,41 @@ async function connectPrinter() {
             `;
         }
     }
+}
+// Converts an HTML5 Canvas to ESC/POS GS v 0 raster commands
+function getRasterCommands(canvas) {
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    const imageData = ctx.getImageData(0, 0, width, height).data;
+    
+    const commands = [];
+    // GS v 0 m xL xH yL yH
+    commands.push(0x1D, 0x76, 0x30, 0x00); // m=0 (normal density)
+    commands.push(width % 256, Math.floor(width / 256)); // xL, xH (width in dots)
+    commands.push(height % 256, Math.floor(height / 256)); // yL, yH (height in dots)
+    
+    // Convert to 1-bit bitmap (8 pixels per byte)
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x += 8) {
+            let byte = 0;
+            for (let bit = 0; bit < 8; bit++) {
+                if (x + bit < width) {
+                    const idx = (y * width + (x + bit)) * 4;
+                    const r = imageData[idx];
+                    const g = imageData[idx + 1];
+                    const b = imageData[idx + 2];
+                    // If pixel is dark (threshold < 128), set bit to 1
+                    const brightness = (r + g + b) / 3;
+                    if (brightness < 128) {
+                        byte |= (1 << bit);
+                    }
+                }
+            }
+            commands.push(byte);
+        }
+    }
+    return commands;
 }
 // Print QR Code
 async function printQR() {
@@ -199,33 +258,91 @@ async function printQR() {
     }
 
     try {
-        // Get QR code image as base64
         const qrCanvas = elements.displays.qrCode.querySelector('canvas');
-        const qrImage = elements.displays.qrCode.querySelector('img');
-        
-        let qrDataUrl;
-        if (qrCanvas) {
-            qrDataUrl = qrCanvas.toDataURL('image/png');
-        } else if (qrImage) {
-            qrDataUrl = qrImage.src;
+        if (!qrCanvas) {
+            showToast('QR Code not found. Please generate it first.', 'error');
+            return;
         }
 
-        // Convert to ESC/POS commands for thermal printer
-        const commands = buildESCPOSCommands(
-            state.qrData.title,
-            qrDataUrl,
-            state.qrData.bottomText
-        );
+        // Scale to 300x300 for perfect 58mm printing (max width is 384 dots)
+        const printCanvas = document.createElement('canvas');
+        printCanvas.width = 300;
+        printCanvas.height = 300;
+        const ctx = printCanvas.getContext('2d');
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, 300, 300);
+        ctx.drawImage(qrCanvas, 0, 0, 300, 300);
 
-        // Send to printer
-        await sendToPrinter(commands);
+        const commands = [];
+        
+        // 1. Initialize
+        commands.push(0x1B, 0x40);
+        
+        // 2. Center align
+        commands.push(0x1B, 0x61, 0x01);
+        
+        // 3. Print Title (Bold + Double Size)
+        if (state.qrData.title) {
+            commands.push(0x1B, 0x21, 0x30); // Bold + Double
+            commands.push(...stringToBytes(state.qrData.title));
+            commands.push(0x0A);
+            commands.push(0x1B, 0x21, 0x00); // Reset to normal
+        }
+        
+        commands.push(0x0A);
+
+        // 4. Print QR Raster Image
+        const rasterCommands = getRasterCommands(printCanvas);
+        commands.push(...rasterCommands);
+        
+        commands.push(0x0A, 0x0A);
+
+        // 5. Print Bottom Text
+        if (state.qrData.bottomText) {
+            commands.push(...stringToBytes(state.qrData.bottomText));
+            commands.push(0x0A);
+        }
+
+        // 6. Feed and Cut
+        commands.push(0x0A, 0x0A, 0x0A, 0x0A);
+        commands.push(0x1D, 0x56, 0x00); // Full cut
+
+        // 7. Send to printer (Chunked, matching your working project exactly)
+        const chunkSize = 64; // Your working code used 64
+        for (let i = 0; i < commands.length; i += chunkSize) {
+            const chunk = new Uint8Array(commands.slice(i, i + chunkSize));
+            
+            // Find writable characteristic dynamically
+            const services = await state.printer.getPrimaryServices();
+            let sent = false;
+            for (const service of services) {
+                const characteristics = await service.getCharacteristics();
+                for (const char of characteristics) {
+                    if (char.properties.writeWithoutResponse) {
+                        await char.writeValueWithoutResponse(chunk);
+                        sent = true;
+                        break;
+                    } else if (char.properties.write) {
+                        await char.writeValue(chunk);
+                        sent = true;
+                        break;
+                    }
+                }
+                if (sent) break;
+            }
+            
+            if (!sent) throw new Error('No writable characteristic found');
+            
+            // CRITICAL: 50ms delay between chunks prevents RPP02N buffer overflow
+            await new Promise(r => setTimeout(r, 50));
+        }
 
         showStep('step-complete');
         showToast('Printed successfully!', 'success');
 
     } catch (error) {
         console.error('Print error:', error);
-        showToast('Print failed. Please try again.', 'error');
+        showToast('Print failed: ' + error.message, 'error');
     }
 }
 

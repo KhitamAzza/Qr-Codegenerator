@@ -254,9 +254,8 @@ function getRasterCommands(canvas) {
     return commands;
 }
 // Find the writable characteristic once, then stream commands to it in
-// small chunks. RPP02N-based printers (like the iWare C-5813 II) only
-// accept ~20 bytes per BLE write and get unreliable with large transfers,
-// so keeping the payload small (see printQR below) matters as much as chunking.
+// small chunks. 64 bytes / 50ms is the configuration confirmed working on
+// this printer (iWare C-5813 II / RPP02N) by an earlier working project.
 async function sendCommandsToPrinter(commands) {
     const services = await state.printer.getPrimaryServices();
     let targetChar = null;
@@ -273,7 +272,7 @@ async function sendCommandsToPrinter(commands) {
     if (!targetChar) throw new Error('No writable characteristic found');
     const useNoResponse = targetChar.properties.writeWithoutResponse;
 
-    const chunkSize = 20;
+    const chunkSize = 64;
     for (let i = 0; i < commands.length; i += chunkSize) {
         const chunk = new Uint8Array(commands.slice(i, i + chunkSize));
 
@@ -283,8 +282,8 @@ async function sendCommandsToPrinter(commands) {
             await targetChar.writeValue(chunk);
         }
 
-        // Small delay between chunks prevents buffer overflow on the printer's BLE module
-        await new Promise(r => setTimeout(r, 30));
+        // Delay between chunks prevents buffer overflow on the printer's BLE module
+        await new Promise(r => setTimeout(r, 50));
     }
 }
 
@@ -302,14 +301,15 @@ async function printQR() {
             return;
         }
 
-        // Scale to 300x300 for 58mm printing (max width is 384 dots)
+        // Scale to 256x256 - a clean multiple of 8 (bytesPerRow = 32 exactly),
+        // matching the size confirmed working on this printer previously.
         const printCanvas = document.createElement('canvas');
-        printCanvas.width = 300;
-        printCanvas.height = 300;
+        printCanvas.width = 256;
+        printCanvas.height = 256;
         const ctx = printCanvas.getContext('2d');
         ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, 300, 300);
-        ctx.drawImage(qrCanvas, 0, 0, 300, 300);
+        ctx.fillRect(0, 0, 256, 256);
+        ctx.drawImage(qrCanvas, 0, 0, 256, 256);
 
         const commands = [];
 

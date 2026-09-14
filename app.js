@@ -259,11 +259,13 @@ function getRasterCommands(canvas) {
 async function sendCommandsToPrinter(commands) {
     const services = await state.printer.getPrimaryServices();
     let targetChar = null;
+    let targetService = null;
     for (const service of services) {
         const characteristics = await service.getCharacteristics();
         for (const char of characteristics) {
             if (char.properties.writeWithoutResponse || char.properties.write) {
                 targetChar = char;
+                targetService = service;
                 break;
             }
         }
@@ -271,15 +273,28 @@ async function sendCommandsToPrinter(commands) {
     }
     if (!targetChar) throw new Error('No writable characteristic found');
     const useNoResponse = targetChar.properties.writeWithoutResponse;
+    console.log('Printer write target -> service:', targetService.uuid,
+        'char:', targetChar.uuid, 'mode:', useNoResponse ? 'writeWithoutResponse' : 'writeValue');
 
     const chunkSize = 64;
+    const totalChunks = Math.ceil(commands.length / chunkSize);
     for (let i = 0; i < commands.length; i += chunkSize) {
+        const chunkIndex = i / chunkSize;
         const chunk = new Uint8Array(commands.slice(i, i + chunkSize));
 
-        if (useNoResponse) {
-            await targetChar.writeValueWithoutResponse(chunk);
-        } else {
-            await targetChar.writeValue(chunk);
+        try {
+            if (useNoResponse) {
+                await targetChar.writeValueWithoutResponse(chunk);
+            } else {
+                await targetChar.writeValue(chunk);
+            }
+        } catch (err) {
+            // Surface exactly which chunk failed and why, instead of a generic message,
+            // so we know whether it's an early/immediate failure (wrong characteristic,
+            // MTU) vs a mid-transfer one (buffer overflow, disconnect, timeout).
+            throw new Error(
+                `Failed at chunk ${chunkIndex + 1}/${totalChunks} (${err.name}): ${err.message}`
+            );
         }
 
         // Delay between chunks prevents buffer overflow on the printer's BLE module

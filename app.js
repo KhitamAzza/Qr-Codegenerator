@@ -296,6 +296,21 @@ async function printQR() {
     }
 
     try {
+        const qrCanvas = elements.displays.qrCode.querySelector('canvas');
+        if (!qrCanvas) {
+            showToast('QR Code not found. Please generate it first.', 'error');
+            return;
+        }
+
+        // Scale to 300x300 for 58mm printing (max width is 384 dots)
+        const printCanvas = document.createElement('canvas');
+        printCanvas.width = 300;
+        printCanvas.height = 300;
+        const ctx = printCanvas.getContext('2d');
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, 300, 300);
+        ctx.drawImage(qrCanvas, 0, 0, 300, 300);
+
         const commands = [];
 
         // 1. Initialize
@@ -314,12 +329,12 @@ async function printQR() {
 
         commands.push(0x0A);
 
-        // 4. Print QR using the printer's OWN built-in QR generator instead of
-        //    sending a raster bitmap. The RPP02N chipset in the C-5813 II gets
-        //    unreliable with the ~11KB of data a 300x300 bitmap needs over BLE;
-        //    the native command only needs to send the raw text (tens of bytes).
-        const qrCommands = buildNativeQRCodeESCPOS(state.qrData.content);
-        commands.push(...qrCommands);
+        // 4. Print QR as a raster bitmap. This C-5813 II / RPP02N clone doesn't
+        //    understand the native "GS ( k" 2D barcode command set - it just
+        //    prints those bytes as plain text - so a bit-image is the only
+        //    method that reliably renders an actual scannable QR code on it.
+        const rasterCommands = getRasterCommands(printCanvas);
+        commands.push(...rasterCommands);
 
         commands.push(0x0A, 0x0A);
 

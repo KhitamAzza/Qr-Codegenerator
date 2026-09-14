@@ -1,4 +1,4 @@
-const CACHE_NAME = 'qr-generator-v1';
+const CACHE_NAME = 'qr-generator-v2';
 const urlsToCache = [
     './',
     './index.html',
@@ -10,6 +10,7 @@ const urlsToCache = [
 
 // Install
 self.addEventListener('install', event => {
+    self.skipWaiting(); // activate the new SW immediately instead of waiting for all tabs to close
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then(cache => {
@@ -22,16 +23,19 @@ self.addEventListener('install', event => {
     );
 });
 
-// Fetch
+// Fetch - network-first: always try to get the latest file first, and only
+// fall back to the cache if there's no network (offline). This is the
+// opposite of before (cache-first), which was silently serving old app.js
+// forever even after the file on disk changed.
 self.addEventListener('fetch', event => {
     event.respondWith(
-        caches.match(event.request)
+        fetch(event.request)
             .then(response => {
-                if (response) {
-                    return response;
-                }
-                return fetch(event.request);
+                const responseClone = response.clone();
+                caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
+                return response;
             })
+            .catch(() => caches.match(event.request))
     );
 });
 
@@ -46,6 +50,6 @@ self.addEventListener('activate', event => {
                     }
                 })
             );
-        })
+        }).then(() => self.clients.claim()) // take control of already-open tabs right away
     );
 });

@@ -1,10 +1,10 @@
 const CACHE_NAME = 'qr-generator-v1';
 const urlsToCache = [
-    '/',
-    '/index.html',
-    '/style.css',
-    '/app.js',
-    '/manifest.json',
+    './',
+    './index.html',
+    './style.css',
+    './app.js',
+    './manifest.json',
     'https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js'
 ];
 
@@ -12,7 +12,13 @@ const urlsToCache = [
 self.addEventListener('install', event => {
     event.waitUntil(
         caches.open(CACHE_NAME)
-            .then(cache => cache.addAll(urlsToCache))
+            .then(cache => {
+                console.log('Caching app shell');
+                return cache.addAll(urlsToCache);
+            })
+            .catch(err => {
+                console.error('Cache addAll failed:', err);
+            })
     );
 });
 

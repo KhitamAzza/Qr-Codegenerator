@@ -221,14 +221,17 @@ function getRasterCommands(canvas) {
     const width = canvas.width;
     const height = canvas.height;
     const imageData = ctx.getImageData(0, 0, width, height).data;
-    
+
+    // GS v 0 wants the width expressed in BYTES (8 dots per byte), not dots.
+    const widthBytes = Math.ceil(width / 8);
+
     const commands = [];
     // GS v 0 m xL xH yL yH
     commands.push(0x1D, 0x76, 0x30, 0x00); // m=0 (normal density)
-    commands.push(width % 256, Math.floor(width / 256)); // xL, xH (width in dots)
+    commands.push(widthBytes % 256, Math.floor(widthBytes / 256)); // xL, xH (width in BYTES)
     commands.push(height % 256, Math.floor(height / 256)); // yL, yH (height in dots)
-    
-    // Convert to 1-bit bitmap (8 pixels per byte)
+
+    // Convert to 1-bit bitmap (8 pixels per byte, MSB = leftmost pixel)
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x += 8) {
             let byte = 0;
@@ -241,7 +244,7 @@ function getRasterCommands(canvas) {
                     // If pixel is dark (threshold < 128), set bit to 1
                     const brightness = (r + g + b) / 3;
                     if (brightness < 128) {
-                        byte |= (1 << bit);
+                        byte |= (1 << (7 - bit)); // MSB-first per ESC/POS raster spec
                     }
                 }
             }
@@ -307,34 +310,39 @@ async function printQR() {
         commands.push(0x0A, 0x0A, 0x0A, 0x0A);
         commands.push(0x1D, 0x56, 0x00); // Full cut
 
-        // 7. Send to printer (Chunked, matching your working project exactly)
-        const chunkSize = 64; // Your working code used 64
+        // 7. Find the writable characteristic ONCE, before sending any data
+        //    (re-discovering it on every chunk was slow and error-prone).
+        const services = await state.printer.getPrimaryServices();
+        let targetChar = null;
+        for (const service of services) {
+            const characteristics = await service.getCharacteristics();
+            for (const char of characteristics) {
+                if (char.properties.writeWithoutResponse || char.properties.write) {
+                    targetChar = char;
+                    break;
+                }
+            }
+            if (targetChar) break;
+        }
+        if (!targetChar) throw new Error('No writable characteristic found');
+        const useNoResponse = targetChar.properties.writeWithoutResponse;
+
+        // 8. Send data in small chunks. Cheap BLE thermal printer modules only
+        //    accept ~20 bytes per write (default BLE MTU is 23 bytes, 20 usable
+        //    after the 3-byte ATT header) - 64-byte writes throw on these boards,
+        //    which is what was causing "Print failed".
+        const chunkSize = 20;
         for (let i = 0; i < commands.length; i += chunkSize) {
             const chunk = new Uint8Array(commands.slice(i, i + chunkSize));
-            
-            // Find writable characteristic dynamically
-            const services = await state.printer.getPrimaryServices();
-            let sent = false;
-            for (const service of services) {
-                const characteristics = await service.getCharacteristics();
-                for (const char of characteristics) {
-                    if (char.properties.writeWithoutResponse) {
-                        await char.writeValueWithoutResponse(chunk);
-                        sent = true;
-                        break;
-                    } else if (char.properties.write) {
-                        await char.writeValue(chunk);
-                        sent = true;
-                        break;
-                    }
-                }
-                if (sent) break;
+
+            if (useNoResponse) {
+                await targetChar.writeValueWithoutResponse(chunk);
+            } else {
+                await targetChar.writeValue(chunk);
             }
-            
-            if (!sent) throw new Error('No writable characteristic found');
-            
-            // CRITICAL: 50ms delay between chunks prevents RPP02N buffer overflow
-            await new Promise(r => setTimeout(r, 50));
+
+            // Small delay between chunks prevents buffer overflow on the printer's BLE module
+            await new Promise(r => setTimeout(r, 30));
         }
 
         showStep('step-complete');

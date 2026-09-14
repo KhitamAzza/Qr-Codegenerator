@@ -120,32 +120,30 @@ function generateQR() {
 }
 
 // Connect to Bluetooth Printer
+// Replace the connectPrinter function in app.js with this:
+
 async function connectPrinter() {
     if (!navigator.bluetooth) {
-        showToast('Web Bluetooth not supported in this browser. Try Chrome on Android/Desktop.', 'error');
+        showToast('Web Bluetooth not supported. Use Chrome on Android or Desktop.', 'error');
         return;
     }
 
     try {
         elements.displays.printerStatus.innerHTML = `
             <div class="loading"></div>
-            <p>Searching for Bluetooth devices...</p>
+            <p>Select your printer from the list...</p>
         `;
 
+        // FIX: Removed 'filters'. Using 'acceptAllDevices: true' is required for generic thermal printers
         const device = await navigator.bluetooth.requestDevice({
-            filters: [
-                { services: ['00001101-0000-1000-8000-00805f9b34fb'] }, // SPP
-                { services: ['0000fff0-0000-1000-8000-00805f9b34fb'] }, // Common thermal printer
-                { services: ['0000ffe0-0000-1000-8000-00805f9b34fb'] }  // Another common one
-            ],
+            acceptAllDevices: true,
             optionalServices: [
-                '00001101-0000-1000-8000-00805f9b34fb',
-                '0000fff0-0000-1000-8000-00805f9b34fb',
-                '0000ffe0-0000-1000-8000-00805f9b34fb',
+                '00001101-0000-1000-8000-00805f9b34fb', // Standard Serial Port Profile (SPP)
+                '0000fff0-0000-1000-8000-00805f9b34fb', // Common thermal printer service
+                '0000ffe0-0000-1000-8000-00805f9b34fb', // Another common thermal printer service
                 'battery_service',
                 'device_information'
-            ],
-            acceptAllDevices: true
+            ]
         });
 
         state.printerDevice = device;
@@ -156,6 +154,10 @@ async function connectPrinter() {
             showToast('Printer disconnected', 'error');
             elements.buttons.printConfirm.style.display = 'none';
             elements.buttons.connect.style.display = 'block';
+            elements.displays.printerStatus.innerHTML = `
+                <div class="status-icon">🔍</div>
+                <p>Searching for Bluetooth thermal printer...</p>
+            `;
         });
 
         const server = await device.gatt.connect();
@@ -174,14 +176,21 @@ async function connectPrinter() {
 
     } catch (error) {
         console.error('Bluetooth connection error:', error);
-        elements.displays.printerStatus.innerHTML = `
-            <div class="status-icon">❌</div>
-            <p>Connection failed. Please try again.</p>
-        `;
-        showToast('Failed to connect to printer', 'error');
+        // If user cancels the prompt, don't show an error toast
+        if (error.name !== 'NotFoundError') {
+            elements.displays.printerStatus.innerHTML = `
+                <div class="status-icon">❌</div>
+                <p>Connection failed. Please try again.</p>
+            `;
+            showToast('Failed to connect to printer', 'error');
+        } else {
+            elements.displays.printerStatus.innerHTML = `
+                <div class="status-icon">🔍</div>
+                <p>Searching for Bluetooth thermal printer...</p>
+            `;
+        }
     }
 }
-
 // Print QR Code
 async function printQR() {
     if (!state.printer) {

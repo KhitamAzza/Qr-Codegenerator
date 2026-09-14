@@ -253,6 +253,41 @@ function getRasterCommands(canvas) {
     }
     return commands;
 }
+// Find the writable characteristic once, then stream commands to it in
+// small chunks. RPP02N-based printers (like the iWare C-5813 II) only
+// accept ~20 bytes per BLE write and get unreliable with large transfers,
+// so keeping the payload small (see printQR below) matters as much as chunking.
+async function sendCommandsToPrinter(commands) {
+    const services = await state.printer.getPrimaryServices();
+    let targetChar = null;
+    for (const service of services) {
+        const characteristics = await service.getCharacteristics();
+        for (const char of characteristics) {
+            if (char.properties.writeWithoutResponse || char.properties.write) {
+                targetChar = char;
+                break;
+            }
+        }
+        if (targetChar) break;
+    }
+    if (!targetChar) throw new Error('No writable characteristic found');
+    const useNoResponse = targetChar.properties.writeWithoutResponse;
+
+    const chunkSize = 20;
+    for (let i = 0; i < commands.length; i += chunkSize) {
+        const chunk = new Uint8Array(commands.slice(i, i + chunkSize));
+
+        if (useNoResponse) {
+            await targetChar.writeValueWithoutResponse(chunk);
+        } else {
+            await targetChar.writeValue(chunk);
+        }
+
+        // Small delay between chunks prevents buffer overflow on the printer's BLE module
+        await new Promise(r => setTimeout(r, 30));
+    }
+}
+
 // Print QR Code
 async function printQR() {
     if (!state.printer) {
@@ -261,29 +296,14 @@ async function printQR() {
     }
 
     try {
-        const qrCanvas = elements.displays.qrCode.querySelector('canvas');
-        if (!qrCanvas) {
-            showToast('QR Code not found. Please generate it first.', 'error');
-            return;
-        }
-
-        // Scale to 300x300 for perfect 58mm printing (max width is 384 dots)
-        const printCanvas = document.createElement('canvas');
-        printCanvas.width = 300;
-        printCanvas.height = 300;
-        const ctx = printCanvas.getContext('2d');
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, 300, 300);
-        ctx.drawImage(qrCanvas, 0, 0, 300, 300);
-
         const commands = [];
-        
+
         // 1. Initialize
         commands.push(0x1B, 0x40);
-        
+
         // 2. Center align
         commands.push(0x1B, 0x61, 0x01);
-        
+
         // 3. Print Title (Bold + Double Size)
         if (state.qrData.title) {
             commands.push(0x1B, 0x21, 0x30); // Bold + Double
@@ -291,13 +311,16 @@ async function printQR() {
             commands.push(0x0A);
             commands.push(0x1B, 0x21, 0x00); // Reset to normal
         }
-        
+
         commands.push(0x0A);
 
-        // 4. Print QR Raster Image
-        const rasterCommands = getRasterCommands(printCanvas);
-        commands.push(...rasterCommands);
-        
+        // 4. Print QR using the printer's OWN built-in QR generator instead of
+        //    sending a raster bitmap. The RPP02N chipset in the C-5813 II gets
+        //    unreliable with the ~11KB of data a 300x300 bitmap needs over BLE;
+        //    the native command only needs to send the raw text (tens of bytes).
+        const qrCommands = buildNativeQRCodeESCPOS(state.qrData.content);
+        commands.push(...qrCommands);
+
         commands.push(0x0A, 0x0A);
 
         // 5. Print Bottom Text
@@ -310,40 +333,8 @@ async function printQR() {
         commands.push(0x0A, 0x0A, 0x0A, 0x0A);
         commands.push(0x1D, 0x56, 0x00); // Full cut
 
-        // 7. Find the writable characteristic ONCE, before sending any data
-        //    (re-discovering it on every chunk was slow and error-prone).
-        const services = await state.printer.getPrimaryServices();
-        let targetChar = null;
-        for (const service of services) {
-            const characteristics = await service.getCharacteristics();
-            for (const char of characteristics) {
-                if (char.properties.writeWithoutResponse || char.properties.write) {
-                    targetChar = char;
-                    break;
-                }
-            }
-            if (targetChar) break;
-        }
-        if (!targetChar) throw new Error('No writable characteristic found');
-        const useNoResponse = targetChar.properties.writeWithoutResponse;
-
-        // 8. Send data in small chunks. Cheap BLE thermal printer modules only
-        //    accept ~20 bytes per write (default BLE MTU is 23 bytes, 20 usable
-        //    after the 3-byte ATT header) - 64-byte writes throw on these boards,
-        //    which is what was causing "Print failed".
-        const chunkSize = 20;
-        for (let i = 0; i < commands.length; i += chunkSize) {
-            const chunk = new Uint8Array(commands.slice(i, i + chunkSize));
-
-            if (useNoResponse) {
-                await targetChar.writeValueWithoutResponse(chunk);
-            } else {
-                await targetChar.writeValue(chunk);
-            }
-
-            // Small delay between chunks prevents buffer overflow on the printer's BLE module
-            await new Promise(r => setTimeout(r, 30));
-        }
+        // 7. Send everything to the printer
+        await sendCommandsToPrinter(commands);
 
         showStep('step-complete');
         showToast('Printed successfully!', 'success');

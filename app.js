@@ -234,55 +234,106 @@ async function printQR() {
 function buildESCPOSCommands(title, qrDataUrl, bottomText) {
     const commands = [];
     
-    // 1. Initialize printer (ESC @)
+    // 1. Initialize printer
     commands.push(0x1B, 0x40);
     
-    // 2. Set print width to 58mm mode
-    commands.push(0x1B, 0x61, 0x01); // Center align
+    // 2. Center align
+    commands.push(0x1B, 0x61, 0x01);
     
-    // 3. Print title if exists (make it bold)
+    // 3. Print Title (Bold)
     if (title) {
         commands.push(0x1B, 0x45, 0x01); // Bold ON
-        const titleBytes = stringToBytes(title);
-        commands.push(...titleBytes);
-        commands.push(0x0A); // Line feed
+        commands.push(...stringToBytes(title));
+        commands.push(0x0A);
         commands.push(0x1B, 0x45, 0x00); // Bold OFF
     }
     
-    // 4. Add spacing
-    commands.push(0x0A, 0x0A);
+    commands.push(0x0A);
     
-    // 5. Print QR code content
-    // For RPP02N, we'll print the content as text with QR-like formatting
-    // In production, convert QR image to bitmap using imageToESCPOS()
+    // 4. Generate QR Code using the PRINTER'S built-in QR engine (Much more reliable!)
+    const qrCommands = buildNativeQRCodeESCPOS(state.qrData.content);
+    commands.push(...qrCommands);
     
-    // Set larger font for QR content
-    commands.push(0x1D, 0x21, 0x11); // Double height and width
-    
-    const contentLines = chunkText(state.qrData.content, 32); // 32 chars per line for 58mm
-    for (const line of contentLines) {
-        const bytes = stringToBytes(line);
-        commands.push(...bytes);
-        commands.push(0x0A);
-    }
-    
-    commands.push(0x1D, 0x21, 0x00); // Normal size
-    
-    // 6. Print bottom text if exists
+    // 5. Print Bottom Text
     if (bottomText) {
-        commands.push(0x0A);
-        const bottomBytes = stringToBytes(bottomText);
-        commands.push(...bottomBytes);
+        commands.push(0x0A, 0x0A);
+        commands.push(...stringToBytes(bottomText));
         commands.push(0x0A);
     }
     
-    // 7. Feed paper (4 lines)
+    // 6. Feed paper and Cut
     commands.push(0x0A, 0x0A, 0x0A, 0x0A);
-    
-    // 8. Cut paper (GS V 0) - RPP02N supports this
-    commands.push(0x1D, 0x56, 0x00);
+    commands.push(0x1D, 0x56, 0x00); // Full cut
     
     return new Uint8Array(commands);
+}
+// Helper: Build native ESC/POS QR Code commands
+function buildNativeQRCodeESCPOS(content) {
+    const commands = [];
+    const dataBytes = stringToBytes(content);
+    const length = dataBytes.length + 3;
+    const pL = length % 256;
+    const pH = Math.floor(length / 256);
+
+    // 1. Set QR Code size (4 = medium, perfect for 58mm paper)
+    commands.push(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, 0x04);
+    
+    // 2. Set Error Correction (L = Low, maximizes space)
+    commands.push(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31);
+    
+    // 3. Store QR Data in printer memory
+    commands.push(0x1D, 0x28, 0x6B, pL, pH, 0x31, 0x50, 0x30, ...dataBytes);
+    
+    // 4. Command printer to print the stored QR code
+    commands.push(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30);
+    
+    return commands;
+}
+
+// Replace sendToPrinter in app.js with this robust version
+async function sendToPrinter(data) {
+    if (!state.printer) throw new Error("Printer not connected");
+    
+    const services = await state.printer.getPrimaryServices();
+    
+    // Known UUIDs for generic 58mm thermal printers (RPP02N, Xprinter, etc.)
+    const targetServiceUUIDs = [
+        'fff0', 'ffe0', '1101' 
+    ];
+
+    for (const service of services) {
+        const serviceUuidShort = service.uuid.substring(4, 8).toLowerCase();
+        
+        // Prioritize known printer services
+        const isTargetService = targetServiceUUIDs.includes(serviceUuidShort);
+        
+        if (isTargetService || true) { // Check all, but prioritize
+            try {
+                const characteristics = await service.getCharacteristics();
+                for (const characteristic of characteristics) {
+                    if (characteristic.properties.write || characteristic.properties.writeWithoutResponse) {
+                        console.log('Found writable characteristic:', characteristic.uuid);
+                        
+                        // CRITICAL FIX: Chunk size reduced to 20 bytes. 
+                        // Cheap Bluetooth modules crash if sent >20 bytes at once.
+                        const chunkSize = 20; 
+                        for (let i = 0; i < data.length; i += chunkSize) {
+                            const chunk = data.slice(i, i + chunkSize);
+                            await characteristic.writeValue(chunk);
+                            
+                            // CRITICAL FIX: 30ms delay between chunks prevents buffer overflow
+                            await new Promise(resolve => setTimeout(resolve, 30)); 
+                        }
+                        return; // Success!
+                    }
+                }
+            } catch (e) {
+                console.warn('Could not read characteristics for service:', service.uuid, e);
+            }
+        }
+    }
+    
+    throw new Error('No writable characteristic found. Printer may not be supported.');
 }
 
 // Helper function to chunk text for 58mm width

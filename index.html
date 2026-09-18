@@ -86,18 +86,27 @@
             </section>
         </section>
 
-        <!-- Tab 2: Codes from Sheet -->
+                <!-- Tab 2: Codes from Sheet -->
         <section id="tab-codes" class="tab-content">
             <div class="card">
                 <h2>📋 Codes from Google Sheet</h2>
                 
-                <div class="form-actions">
-                    <button id="btn-refresh-codes" class="btn btn-primary">
-                        🔄 Refresh Codes
-                    </button>
-                    <button id="btn-clear-cache" class="btn btn-secondary">
-                        🗑️ Clear Cache
-                    </button>
+                <!-- Simple Template Selector -->
+                <div class="form-group">
+                    <label for="header-template">Print Header Template</label>
+                    <select id="header-template" class="form-select">
+                        <option value="">None (Just the QR Code)</option>
+                        <option value="ID: ">ID: </option>
+                        <option value="Student: ">Student: </option>
+                        <option value="Asset: ">Asset: </option>
+                        <option value="custom">Custom...</option>
+                    </select>
+                    <input type="text" id="custom-header-input" class="custom-header-input" placeholder="Type your exact custom header here..." style="display:none;">
+                </div>
+
+                <div class="form-actions" style="margin-top: 0; margin-bottom: 16px;">
+                    <button id="btn-refresh-codes" class="btn btn-primary">🔄 Refresh Codes</button>
+                    <button id="btn-clear-cache" class="btn btn-secondary">🗑️ Clear Cache</button>
                 </div>
 
                 <div id="codes-loading" class="loading-state" style="display:none;">
@@ -106,11 +115,10 @@
                 </div>
 
                 <div id="codes-list" class="questions-list">
-                    <p class="empty-state">Click "Refresh Codes" to load from Column A</p>
+                    <p class="empty-state">Click "Refresh Codes" to load from Column A</p
                 </div>
             </div>
         </section>
-
         <!-- Printer Connection Section (Shared) -->
         <section id="step-printer" class="step">
             <div class="card">

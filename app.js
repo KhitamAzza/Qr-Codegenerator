@@ -2,8 +2,7 @@
 // CONFIGURATION
 // ══════════════════════════════════════════════════════════════════════════════
 const CONFIG = {
-    GAS_URL: 'https://script.google.com/macros/s/AKfycbyyfXoe7tzhnyGy17O5azHjoS8eVDfP7oh4UXiuX41rxnfo-f2FgX_Mb-cPEYdnejYZwg/exec', // Replace with your actual URL
-    CUSTOM_HEADER: '',                  // The custom word you want on top
+    GAS_URL: 'https://script.google.com/macros/s/AKfycbyyfXoe7tzhnyGy17O5azHjoS8eVDfP7oh4UXiuX41rxnfo-f2FgX_Mb-cPEYdnejYZwg/exec',
     PRINT_CACHE_HOURS: 24,
     PRINT_CACHE_KEY: 'qr-print-cache'
 };
@@ -18,7 +17,7 @@ const state = {
     printer: null,
     printerDevice: null,
     templates: [],
-    codes: [],          // Simple array of strings from Column A
+    codes: [],
     currentCode: null,
     printCache: {}
 };
@@ -41,7 +40,9 @@ const elements = {
     inputs: {
         title: document.getElementById('title'),
         content: document.getElementById('qr-content'),
-        bottomText: document.getElementById('bottom-text')
+        bottomText: document.getElementById('bottom-text'),
+        headerTemplate: document.getElementById('header-template'),
+        customHeader: document.getElementById('custom-header-input')
     },
     buttons: {
         generate: document.getElementById('btn-generate'),
@@ -79,10 +80,15 @@ document.addEventListener('DOMContentLoaded', () => {
     loadTemplates();
     renderTemplates();
     setupEventListeners();
+    
+    // Toggle custom header input based on dropdown
+    elements.inputs.headerTemplate.addEventListener('change', () => {
+        elements.inputs.customHeader.style.display = 
+            elements.inputs.headerTemplate.value === 'custom' ? 'block' : 'none';
+    });
 });
 
 function setupEventListeners() {
-    // Manual Tab
     elements.buttons.generate.addEventListener('click', generateQR);
     elements.buttons.edit.addEventListener('click', () => showStep('step-input'));
     elements.buttons.print.addEventListener('click', () => showStep('step-printer'));
@@ -95,16 +101,11 @@ function setupEventListeners() {
     });
     elements.buttons.newQr.addEventListener('click', () => { resetForm(); showStep('step-input'); });
     elements.buttons.saveTemplate.addEventListener('click', saveTemplate);
-
-    // Bluetooth
     elements.buttons.connect.addEventListener('click', connectPrinter);
-    elements.buttons.printConfirm.addEventListener('click', printQR);
+    elements.buttons.printConfirm.addEventListener('click', executePrint); // Renamed for clarity
 
-    // Tabs
     if (elements.tabs.manual) elements.tabs.manual.addEventListener('click', () => switchTab('manual'));
     if (elements.tabs.codes) elements.tabs.codes.addEventListener('click', () => switchTab('codes'));
-
-    // Codes Tab
     if (elements.codes.refreshBtn) elements.codes.refreshBtn.addEventListener('click', loadCodesFromSheet);
     if (elements.codes.clearCacheBtn) elements.codes.clearCacheBtn.addEventListener('click', clearPrintCache);
 }
@@ -144,7 +145,7 @@ function resetForm() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// PRINT CACHE (Local Storage)
+// PRINT CACHE
 // ══════════════════════════════════════════════════════════════════════════════
 function loadPrintCache() {
     const cached = localStorage.getItem(CONFIG.PRINT_CACHE_KEY);
@@ -153,11 +154,7 @@ function loadPrintCache() {
         cleanExpiredCache();
     }
 }
-
-function savePrintCache() {
-    localStorage.setItem(CONFIG.PRINT_CACHE_KEY, JSON.stringify(state.printCache));
-}
-
+function savePrintCache() { localStorage.setItem(CONFIG.PRINT_CACHE_KEY, JSON.stringify(state.printCache)); }
 function cleanExpiredCache() {
     const now = Date.now();
     const expiryMs = CONFIG.PRINT_CACHE_HOURS * 60 * 60 * 1000;
@@ -166,16 +163,11 @@ function cleanExpiredCache() {
     });
     savePrintCache();
 }
-
-function isPrinted(code) {
-    return state.printCache[code] !== undefined;
-}
-
+function isPrinted(code) { return state.printCache[code] !== undefined; }
 function markAsPrinted(code) {
     state.printCache[code] = { timestamp: Date.now(), printedAt: new Date().toISOString() };
     savePrintCache();
 }
-
 function clearPrintCache() {
     if (confirm('Clear all print history?')) {
         state.printCache = {};
@@ -186,7 +178,7 @@ function clearPrintCache() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GOOGLE SHEET CODES LIST
+// GOOGLE SHEET CODES & INSTANT PRINT
 // ══════════════════════════════════════════════════════════════════════════════
 async function loadCodesFromSheet() {
     if (!elements.codes.loading || !elements.codes.list) return;
@@ -226,7 +218,7 @@ function renderCodesList() {
             <div class="question-item ${printed ? 'printed' : ''}" data-code="${code}">
                 <div class="question-content">
                     <div class="question-id"><strong>${code}</strong> ${printed ? '<span class="printed-badge">✓ Printed</span>' : ''}</div>
-                    ${printInfo ? `<div class="print-info"><small>Printed: ${new Date(printInfo.printedAt).toLocaleString()}</small></div>` : ''}
+                    ${printInfo ? `<div class="print-info"><small>Printed: ${new Date(printInfo.printedAt).toLocaleTimeString()}</small></div>` : ''}
                 </div>
                 <div class="question-actions">
                     <button class="btn btn-sm btn-primary print-code-btn" data-code="${code}">
@@ -240,21 +232,28 @@ function renderCodesList() {
     document.querySelectorAll('.print-code-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const code = e.target.dataset.code;
-            prepareCodeForPrint(code);
+            triggerInstantPrint(code);
         });
     });
 }
 
-function prepareCodeForPrint(code) {
+// NEW: Instant Print Logic (No scrolling, no page navigation if connected)
+function triggerInstantPrint(code) {
     state.currentCode = code;
+    
+    // Get EXACTLY what the user selected. No auto-appending the code.
+    const template = elements.inputs.headerTemplate.value;
+    const header = template === 'custom' ? elements.inputs.customHeader.value.trim() : template;
+    
     state.qrData = {
-        title: CONFIG.CUSTOM_HEADER + code, // e.g., "Question Q001"
-        content: code,                      // QR code is JUST the code
+        title: header,       // Exactly the template string (or empty)
+        content: code,       // QR code is JUST the code
         bottomText: ''
     };
     
-    elements.displays.title.textContent = state.qrData.title;
-    elements.displays.bottom.textContent = state.qrData.bottomText;
+    // Prepare hidden/visible canvas for printing
+    elements.displays.title.textContent = header;
+    elements.displays.bottom.textContent = '';
     elements.displays.qrCode.innerHTML = '';
     
     new QRCode(elements.displays.qrCode, {
@@ -265,15 +264,20 @@ function prepareCodeForPrint(code) {
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.H
     });
-    
-    showStep('step-printer');
-    if (state.printer) {
-        elements.buttons.printConfirm.style.display = 'block';
-        elements.buttons.connect.style.display = 'none';
-    } else {
-        elements.buttons.printConfirm.style.display = 'none';
-        elements.buttons.connect.style.display = 'block';
-    }
+
+    // Wait a tick for QRCode lib to render the canvas, then print or connect
+    setTimeout(() => {
+        if (state.printer) {
+            // Printer is connected! Print immediately in the background.
+            showToast('Printing...', 'success');
+            executePrint();
+        } else {
+            // Not connected, show the connection screen
+            showStep('step-printer');
+            elements.buttons.printConfirm.style.display = 'none';
+            elements.buttons.connect.style.display = 'block';
+        }
+    }, 100);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -312,7 +316,7 @@ function generateQR() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// BLUETOOTH PRINTER (Proven Working)
+// BLUETOOTH PRINTER (Proven Working 64-byte / 50ms)
 // ══════════════════════════════════════════════════════════════════════════════
 async function connectPrinter() {
     if (!navigator.bluetooth) {
@@ -379,7 +383,7 @@ function getRasterCommands(canvas) {
     const widthBytes = Math.ceil(width / 8);
     const commands = [];
     
-    commands.push(0x1D, 0x76, 0x30, 0x00); // GS v 0 m=0
+    commands.push(0x1D, 0x76, 0x30, 0x00);
     commands.push(widthBytes % 256, Math.floor(widthBytes / 256));
     commands.push(height % 256, Math.floor(height / 256));
     
@@ -421,11 +425,12 @@ async function sendCommandsToPrinter(commands) {
         const chunk = new Uint8Array(commands.slice(i, i + chunkSize));
         if (useNoResponse) await targetChar.writeValueWithoutResponse(chunk);
         else await targetChar.writeValue(chunk);
-        await new Promise(r => setTimeout(r, 50)); // 50ms delay prevents buffer overflow
+        await new Promise(r => setTimeout(r, 50));
     }
 }
 
-async function printQR() {
+// Core Print Execution (Called by both "Print Now" button and Instant Print)
+async function executePrint() {
     if (!state.printer) {
         showToast('Please connect to a printer first', 'error');
         return;
@@ -470,17 +475,12 @@ async function printQR() {
 
         await sendCommandsToPrinter(commands);
 
-        // Mark as printed locally
-        if (state.currentCode) {
-            markAsPrinted(state.currentCode);
-        }
+        if (state.currentCode) markAsPrinted(state.currentCode);
 
         showStep('step-complete');
         showToast('Printed successfully!', 'success');
 
-        if (state.currentTab === 'codes') {
-            renderCodesList(); // Update UI to show "Printed" badge
-        }
+        if (state.currentTab === 'codes') renderCodesList();
 
     } catch (error) {
         console.error('Print error:', error);

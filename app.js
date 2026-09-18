@@ -1,6 +1,19 @@
-// App State
+// ══════════════════════════════════════════════════════════════════════════════
+// CONFIGURATION
+// ══════════════════════════════════════════════════════════════════════════════
+const CONFIG = {
+    // REPLACE WITH YOUR GOOGLE APPS SCRIPT WEB APP URL
+    GAS_URL: 'https://script.google.com/macros/s/AKfycbyyfXoe7tzhnyGy17O5azHjoS8eVDfP7oh4UXiuX41rxnfo-f2FgX_Mb-cPEYdnejYZwg/exec',
+    PRINT_CACHE_HOURS: 24, // Cache expires after 24 hours
+    PRINT_CACHE_KEY: 'qr-print-cache'
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// APP STATE
+// ══════════════════════════════════════════════════════════════════════════════
 const state = {
     currentStep: 'step-input',
+    currentTab: 'manual',
     qrData: {
         title: '',
         content: '',
@@ -8,16 +21,29 @@ const state = {
     },
     printer: null,
     printerDevice: null,
-    templates: []
+    templates: [],
+    questions: [],
+    currentQuestion: null,
+    printCache: {}
 };
 
-// DOM Elements
+// ══════════════════════════════════════════════════════════════════════════════
+// DOM ELEMENTS
+// ══════════════════════════════════════════════════════════════════════════════
 const elements = {
     steps: {
         input: document.getElementById('step-input'),
         preview: document.getElementById('step-preview'),
         printer: document.getElementById('step-printer'),
         complete: document.getElementById('step-complete')
+    },
+    tabs: {
+        manual: document.querySelector('[data-tab="manual"]'),
+        questions: document.querySelector('[data-tab="questions"]')
+    },
+    tabContents: {
+        manual: document.getElementById('tab-manual'),
+        questions: document.getElementById('tab-questions')
     },
     inputs: {
         title: document.getElementById('title'),
@@ -43,24 +69,30 @@ const elements = {
         printerName: document.getElementById('printer-name'),
         templatesList: document.getElementById('templates-list')
     },
+    questions: {
+        list: document.getElementById('questions-list'),
+        loading: document.getElementById('questions-loading'),
+        refreshBtn: document.getElementById('btn-refresh-questions'),
+        clearCacheBtn: document.getElementById('btn-clear-cache')
+    },
     toast: document.getElementById('toast')
 };
 
-// Initialize App
+// ══════════════════════════════════════════════════════════════════════════════
+// INITIALIZATION
+// ══════════════════════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
+    loadPrintCache();
     loadTemplates();
     renderTemplates();
     setupEventListeners();
-    registerServiceWorker();
 });
 
-// Setup Event Listeners
 function setupEventListeners() {
+    // Manual Tab
     elements.buttons.generate.addEventListener('click', generateQR);
     elements.buttons.edit.addEventListener('click', () => showStep('step-input'));
     elements.buttons.print.addEventListener('click', () => showStep('step-printer'));
-    elements.buttons.connect.addEventListener('click', connectPrinter);
-    elements.buttons.printConfirm.addEventListener('click', printQR);
     elements.buttons.printAnother.addEventListener('click', () => {
         showStep('step-printer');
         if (state.printer) {
@@ -73,18 +105,230 @@ function setupEventListeners() {
         showStep('step-input');
     });
     elements.buttons.saveTemplate.addEventListener('click', saveTemplate);
+
+    // Bluetooth
+    elements.buttons.connect.addEventListener('click', connectPrinter);
+    elements.buttons.printConfirm.addEventListener('click', printQR);
+
+    // Tabs
+    if (elements.tabs.manual) elements.tabs.manual.addEventListener('click', () => switchTab('manual'));
+    if (elements.tabs.questions) elements.tabs.questions.addEventListener('click', () => switchTab('questions'));
+
+    // Questions Tab
+    if (elements.questions.refreshBtn) elements.questions.refreshBtn.addEventListener('click', loadQuestionsFromSheet);
+    if (elements.questions.clearCacheBtn) elements.questions.clearCacheBtn.addEventListener('click', clearPrintCache);
 }
 
-// Navigation
+// ══════════════════════════════════════════════════════════════════════════════
+// NAVIGATION & UI HELPERS
+// ══════════════════════════════════════════════════════════════════════════════
 function showStep(stepId) {
-    Object.values(elements.steps).forEach(step => {
-        step.classList.remove('active');
-    });
-    elements.steps[stepId.replace('step-', '')].classList.add('active');
+    Object.values(elements.steps).forEach(step => step.classList.remove('active'));
+    const target = elements.steps[stepId.replace('step-', '')];
+    if (target) target.classList.add('active');
     state.currentStep = stepId;
 }
 
-// Generate QR Code
+function switchTab(tabName) {
+    state.currentTab = tabName;
+    
+    Object.values(elements.tabs).forEach(btn => {
+        if (btn) btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    
+    Object.values(elements.tabContents).forEach(content => {
+        if (content) content.classList.toggle('active', content.id === `tab-${tabName}`);
+    });
+
+    if (tabName === 'questions' && state.questions.length === 0) {
+        loadQuestionsFromSheet();
+    }
+}
+
+function showToast(message, type = '') {
+    elements.toast.textContent = message;
+    elements.toast.className = 'toast show ' + type;
+    setTimeout(() => {
+        elements.toast.className = 'toast';
+    }, 3000);
+}
+
+function resetForm() {
+    elements.inputs.title.value = '';
+    elements.inputs.content.value = '';
+    elements.inputs.bottomText.value = '';
+    elements.displays.title.textContent = '';
+    elements.displays.bottom.textContent = '';
+    elements.displays.qrCode.innerHTML = '';
+    elements.buttons.saveTemplate.style.display = 'none';
+    state.currentQuestion = null;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PRINT CACHE MANAGEMENT (Local Storage)
+// ══════════════════════════════════════════════════════════════════════════════
+function loadPrintCache() {
+    const cached = localStorage.getItem(CONFIG.PRINT_CACHE_KEY);
+    if (cached) {
+        state.printCache = JSON.parse(cached);
+        cleanExpiredCache();
+    }
+}
+
+function savePrintCache() {
+    localStorage.setItem(CONFIG.PRINT_CACHE_KEY, JSON.stringify(state.printCache));
+}
+
+function cleanExpiredCache() {
+    const now = Date.now();
+    const expiryMs = CONFIG.PRINT_CACHE_HOURS * 60 * 60 * 1000;
+    let cleaned = 0;
+    
+    Object.keys(state.printCache).forEach(key => {
+        if (now - state.printCache[key].timestamp > expiryMs) {
+            delete state.printCache[key];
+            cleaned++;
+        }
+    });
+    
+    if (cleaned > 0) {
+        savePrintCache();
+        console.log(`Cleaned ${cleaned} expired print cache entries`);
+    }
+}
+
+function isPrinted(questionId) {
+    return state.printCache[questionId] !== undefined;
+}
+
+function markAsPrinted(questionId, data) {
+    state.printCache[questionId] = {
+        timestamp: Date.now(),
+        printedAt: new Date().toISOString(),
+        data: data
+    };
+    savePrintCache();
+}
+
+function clearPrintCache() {
+    if (confirm('Clear all print history? This will mark all codes as "not printed".')) {
+        state.printCache = {};
+        savePrintCache();
+        showToast('Print cache cleared!', 'success');
+        if (state.questions.length > 0) {
+            renderQuestionsList();
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GOOGLE SHEETS INTEGRATION
+// ══════════════════════════════════════════════════════════════════════════════
+async function loadQuestionsFromSheet() {
+    if (!elements.questions.loading || !elements.questions.list) return;
+    
+    elements.questions.loading.style.display = 'block';
+    elements.questions.list.innerHTML = '';
+    
+    try {
+        // Cache-busting timestamp to ensure fresh data
+        const response = await fetch(`${CONFIG.GAS_URL}?t=${Date.now()}`);
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            state.questions = result.questions || [];
+            renderQuestionsList();
+            showToast(`Loaded ${state.questions.length} questions`, 'success');
+        } else {
+            throw new Error(result.message || 'Failed to load questions');
+        }
+    } catch (error) {
+        console.error('Load questions error:', error);
+        elements.questions.list.innerHTML = `
+            <div class="error-state">
+                <p>❌ Failed to load questions</p>
+                <p style="font-size: 0.85rem; color: var(--danger);">${error.message}</p>
+            </div>
+        `;
+        showToast('Failed to load questions', 'error');
+    } finally {
+        elements.questions.loading.style.display = 'none';
+    }
+}
+
+function renderQuestionsList() {
+    if (!elements.questions.list) return;
+
+    if (state.questions.length === 0) {
+        elements.questions.list.innerHTML = '<p class="empty-state">No questions found in the sheet</p>';
+        return;
+    }
+    
+    elements.questions.list.innerHTML = state.questions.map(q => {
+        const printed = isPrinted(q.question_id);
+        const printInfo = printed ? state.printCache[q.question_id] : null;
+        
+        return `
+            <div class="question-item ${printed ? 'printed' : ''}" data-question-id="${q.question_id}">
+                <div class="question-content">
+                    <div class="question-id">
+                        <strong>ID:</strong> ${q.question_id}
+                        ${printed ? '<span class="printed-badge">✓ Printed</span>' : ''}
+                    </div>
+                    ${printInfo ? `<div class="print-info"><small>Printed: ${new Date(printInfo.printedAt).toLocaleString()}</small></div>` : ''}
+                </div>
+                <div class="question-actions">
+                    <button class="btn btn-sm btn-primary print-question-btn" data-id="${q.question_id}">
+                        ${printed ? '🔄 Reprint' : '🖨️ Print'}
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+    
+    document.querySelectorAll('.print-question-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const questionId = e.target.dataset.id;
+            const question = state.questions.find(q => q.question_id === questionId);
+            if (question) prepareQuestionForPrint(question);
+        });
+    });
+}
+
+function prepareQuestionForPrint(question) {
+    state.currentQuestion = question;
+    state.qrData = {
+        title: `Question ${question.question_id}`,
+        content: question.question_id,
+        bottomText: ''
+    };
+    
+    elements.displays.title.textContent = state.qrData.title;
+    elements.displays.bottom.textContent = state.qrData.bottomText;
+    elements.displays.qrCode.innerHTML = '';
+    
+    new QRCode(elements.displays.qrCode, {
+        text: question.question_id,
+        width: 256,
+        height: 256,
+        colorDark: '#000000',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.H
+    });
+    
+    showStep('step-printer');
+    if (state.printer) {
+        elements.buttons.printConfirm.style.display = 'block';
+        elements.buttons.connect.style.display = 'none';
+    } else {
+        elements.buttons.printConfirm.style.display = 'none';
+        elements.buttons.connect.style.display = 'block';
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// QR CODE GENERATION (Manual)
+// ══════════════════════════════════════════════════════════════════════════════
 function generateQR() {
     const title = elements.inputs.title.value.trim();
     const content = elements.inputs.content.value.trim();
@@ -96,32 +340,30 @@ function generateQR() {
         return;
     }
 
+    state.currentQuestion = null; // Clear any sheet question context
     state.qrData = { title, content, bottomText };
 
-    // Display QR Code
     elements.displays.title.textContent = title;
     elements.displays.bottom.textContent = bottomText;
     elements.displays.qrCode.innerHTML = '';
 
     new QRCode(elements.displays.qrCode, {
         text: content,
-        width: 200,
-        height: 200,
+        width: 256,
+        height: 256,
         colorDark: '#000000',
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.H
     });
 
-    // Show save template button
     elements.buttons.saveTemplate.style.display = 'block';
-
     showStep('step-preview');
     showToast('QR Code generated successfully!', 'success');
 }
 
-// Connect to Bluetooth Printer
-// Replace the connectPrinter function in app.js with this:
-
+// ══════════════════════════════════════════════════════════════════════════════
+// BLUETOOTH PRINTER CONNECTION
+// ══════════════════════════════════════════════════════════════════════════════
 async function connectPrinter() {
     if (!navigator.bluetooth) {
         showToast('Web Bluetooth not supported. Use Chrome on Android.', 'error');
@@ -134,7 +376,6 @@ async function connectPrinter() {
             <p>Select your printer from the list...</p>
         `;
 
-        // Mirror of your working bluetooth.js
         const device = await navigator.bluetooth.requestDevice({
             acceptAllDevices: true,
             optionalServices: [
@@ -143,7 +384,7 @@ async function connectPrinter() {
                 'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
                 '49535343-fe7d-4ae5-8fa9-9fafd205e455',
                 '0000fee7-0000-1000-8000-00805f9b34fb',
-                '00001101-0000-1000-8000-00805f9b34fb', // SPP
+                '00001101-0000-1000-8000-00805f9b34fb',
                 '0000fff0-0000-1000-8000-00805f9b34fb',
                 '0000ffe0-0000-1000-8000-00805f9b34fb'
             ]
@@ -158,7 +399,6 @@ async function connectPrinter() {
         state.printer = server;
         state.printerDevice = device;
 
-        // Verify writable characteristic exists (just like your working code)
         const services = await server.getPrimaryServices();
         let targetChar = null;
         for (const service of services) {
@@ -172,9 +412,7 @@ async function connectPrinter() {
             if (targetChar) break;
         }
 
-        if (!targetChar) {
-            throw new Error('Printer does not support write characteristic');
-        }
+        if (!targetChar) throw new Error('Printer does not support write characteristic');
 
         device.addEventListener('gattserverdisconnected', () => {
             state.printer = null;
@@ -215,23 +453,24 @@ async function connectPrinter() {
         }
     }
 }
-// Converts an HTML5 Canvas to ESC/POS GS v 0 raster commands
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PRINTING SYSTEM (Raster - Proven Working for RPP02N / C-5813)
+// ══════════════════════════════════════════════════════════════════════════════
 function getRasterCommands(canvas) {
     const ctx = canvas.getContext('2d');
     const width = canvas.width;
     const height = canvas.height;
     const imageData = ctx.getImageData(0, 0, width, height).data;
-
-    // GS v 0 wants the width expressed in BYTES (8 dots per byte), not dots.
+    
     const widthBytes = Math.ceil(width / 8);
-
     const commands = [];
+    
     // GS v 0 m xL xH yL yH
     commands.push(0x1D, 0x76, 0x30, 0x00); // m=0 (normal density)
     commands.push(widthBytes % 256, Math.floor(widthBytes / 256)); // xL, xH (width in BYTES)
     commands.push(height % 256, Math.floor(height / 256)); // yL, yH (height in dots)
-
-    // Convert to 1-bit bitmap (8 pixels per byte, MSB = leftmost pixel)
+    
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x += 8) {
             let byte = 0;
@@ -241,7 +480,6 @@ function getRasterCommands(canvas) {
                     const r = imageData[idx];
                     const g = imageData[idx + 1];
                     const b = imageData[idx + 2];
-                    // If pixel is dark (threshold < 128), set bit to 1
                     const brightness = (r + g + b) / 3;
                     if (brightness < 128) {
                         byte |= (1 << (7 - bit)); // MSB-first per ESC/POS raster spec
@@ -253,13 +491,12 @@ function getRasterCommands(canvas) {
     }
     return commands;
 }
-// Find the writable characteristic once, then stream commands to it in
-// small chunks. 64 bytes / 50ms is the configuration confirmed working on
-// this printer (iWare C-5813 II / RPP02N) by an earlier working project.
+
 async function sendCommandsToPrinter(commands) {
     const services = await state.printer.getPrimaryServices();
     let targetChar = null;
     let targetService = null;
+    
     for (const service of services) {
         const characteristics = await service.getCharacteristics();
         for (const char of characteristics) {
@@ -271,17 +508,17 @@ async function sendCommandsToPrinter(commands) {
         }
         if (targetChar) break;
     }
+    
     if (!targetChar) throw new Error('No writable characteristic found');
+    
     const useNoResponse = targetChar.properties.writeWithoutResponse;
-    console.log('Printer write target -> service:', targetService.uuid,
-        'char:', targetChar.uuid, 'mode:', useNoResponse ? 'writeWithoutResponse' : 'writeValue');
-
-    const chunkSize = 64;
+    const chunkSize = 64; // Proven working for RPP02N
     const totalChunks = Math.ceil(commands.length / chunkSize);
+    
     for (let i = 0; i < commands.length; i += chunkSize) {
-        const chunkIndex = i / chunkSize;
+        const chunkIndex = Math.floor(i / chunkSize);
         const chunk = new Uint8Array(commands.slice(i, i + chunkSize));
-
+        
         try {
             if (useNoResponse) {
                 await targetChar.writeValueWithoutResponse(chunk);
@@ -289,20 +526,14 @@ async function sendCommandsToPrinter(commands) {
                 await targetChar.writeValue(chunk);
             }
         } catch (err) {
-            // Surface exactly which chunk failed and why, instead of a generic message,
-            // so we know whether it's an early/immediate failure (wrong characteristic,
-            // MTU) vs a mid-transfer one (buffer overflow, disconnect, timeout).
-            throw new Error(
-                `Failed at chunk ${chunkIndex + 1}/${totalChunks} (${err.name}): ${err.message}`
-            );
+            throw new Error(`Failed at chunk ${chunkIndex + 1}/${totalChunks} (${err.name}): ${err.message}`);
         }
-
-        // Delay between chunks prevents buffer overflow on the printer's BLE module
+        
+        // 50ms delay prevents buffer overflow on the printer's BLE module
         await new Promise(r => setTimeout(r, 50));
     }
 }
 
-// Print QR Code
 async function printQR() {
     if (!state.printer) {
         showToast('Please connect to a printer first', 'error');
@@ -316,8 +547,6 @@ async function printQR() {
             return;
         }
 
-        // Scale to 256x256 - a clean multiple of 8 (bytesPerRow = 32 exactly),
-        // matching the size confirmed working on this printer previously.
         const printCanvas = document.createElement('canvas');
         printCanvas.width = 256;
         printCanvas.height = 256;
@@ -327,211 +556,65 @@ async function printQR() {
         ctx.drawImage(qrCanvas, 0, 0, 256, 256);
 
         const commands = [];
+        commands.push(0x1B, 0x40); // Initialize
+        commands.push(0x1B, 0x61, 0x01); // Center align
 
-        // 1. Initialize
-        commands.push(0x1B, 0x40);
-
-        // 2. Center align
-        commands.push(0x1B, 0x61, 0x01);
-
-        // 3. Print Title (Bold + Double Size)
         if (state.qrData.title) {
             commands.push(0x1B, 0x21, 0x30); // Bold + Double
             commands.push(...stringToBytes(state.qrData.title));
             commands.push(0x0A);
-            commands.push(0x1B, 0x21, 0x00); // Reset to normal
+            commands.push(0x1B, 0x21, 0x00); // Reset
         }
-
         commands.push(0x0A);
 
-        // 4. Print QR as a raster bitmap. This C-5813 II / RPP02N clone doesn't
-        //    understand the native "GS ( k" 2D barcode command set - it just
-        //    prints those bytes as plain text - so a bit-image is the only
-        //    method that reliably renders an actual scannable QR code on it.
         const rasterCommands = getRasterCommands(printCanvas);
         commands.push(...rasterCommands);
-
         commands.push(0x0A, 0x0A);
 
-        // 5. Print Bottom Text
         if (state.qrData.bottomText) {
             commands.push(...stringToBytes(state.qrData.bottomText));
             commands.push(0x0A);
         }
 
-        // 6. Feed and Cut
         commands.push(0x0A, 0x0A, 0x0A, 0x0A);
         commands.push(0x1D, 0x56, 0x00); // Full cut
 
-        // 7. Send everything to the printer
         await sendCommandsToPrinter(commands);
+
+        // Mark as printed in local cache if it came from the Questions sheet
+        if (state.currentQuestion) {
+            markAsPrinted(state.currentQuestion.question_id, {
+                question_id: state.currentQuestion.question_id,
+                title: state.qrData.title
+            });
+            
+            // Optional: Also update Google Sheet (non-blocking)
+            try {
+                await fetch(CONFIG.GAS_URL, {
+                    method: 'POST',
+                    mode: 'no-cors', // Prevents CORS errors if script isn't set to "Anyone"
+                    body: JSON.stringify({
+                        action: 'markPrinted',
+                        questionId: state.currentQuestion.question_id,
+                        printData: { timestamp: new Date().toISOString() }
+                    })
+                });
+            } catch (sheetError) {
+                console.warn('Failed to update Google Sheet (non-critical):', sheetError);
+            }
+        }
 
         showStep('step-complete');
         showToast('Printed successfully!', 'success');
+
+        if (state.currentTab === 'questions') {
+            renderQuestionsList(); // Update UI to show "Printed" badge
+        }
 
     } catch (error) {
         console.error('Print error:', error);
         showToast('Print failed: ' + error.message, 'error');
     }
-}
-
-// Replace the buildESCPOSCommands function in app.js with this optimized version:
-
-function buildESCPOSCommands(title, qrDataUrl, bottomText) {
-    const commands = [];
-    
-    // 1. Initialize printer
-    commands.push(0x1B, 0x40);
-    
-    // 2. Center align
-    commands.push(0x1B, 0x61, 0x01);
-    
-    // 3. Print Title (Bold)
-    if (title) {
-        commands.push(0x1B, 0x45, 0x01); // Bold ON
-        commands.push(...stringToBytes(title));
-        commands.push(0x0A);
-        commands.push(0x1B, 0x45, 0x00); // Bold OFF
-    }
-    
-    commands.push(0x0A);
-    
-    // 4. Generate QR Code using the PRINTER'S built-in QR engine (Much more reliable!)
-    const qrCommands = buildNativeQRCodeESCPOS(state.qrData.content);
-    commands.push(...qrCommands);
-    
-    // 5. Print Bottom Text
-    if (bottomText) {
-        commands.push(0x0A, 0x0A);
-        commands.push(...stringToBytes(bottomText));
-        commands.push(0x0A);
-    }
-    
-    // 6. Feed paper and Cut
-    commands.push(0x0A, 0x0A, 0x0A, 0x0A);
-    commands.push(0x1D, 0x56, 0x00); // Full cut
-    
-    return new Uint8Array(commands);
-}
-// Helper: Build native ESC/POS QR Code commands
-function buildNativeQRCodeESCPOS(content) {
-    const commands = [];
-    const dataBytes = stringToBytes(content);
-    const length = dataBytes.length + 3;
-    const pL = length % 256;
-    const pH = Math.floor(length / 256);
-
-    // 1. Set QR Code size (4 = medium, perfect for 58mm paper)
-    commands.push(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, 0x04);
-    
-    // 2. Set Error Correction (L = Low, maximizes space)
-    commands.push(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31);
-    
-    // 3. Store QR Data in printer memory
-    commands.push(0x1D, 0x28, 0x6B, pL, pH, 0x31, 0x50, 0x30, ...dataBytes);
-    
-    // 4. Command printer to print the stored QR code
-    commands.push(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30);
-    
-    return commands;
-}
-
-// Replace sendToPrinter in app.js with this robust version
-async function sendToPrinter(data) {
-    if (!state.printer) throw new Error("Printer not connected");
-    
-    const services = await state.printer.getPrimaryServices();
-    
-    // Known UUIDs for generic 58mm thermal printers (RPP02N, Xprinter, etc.)
-    const targetServiceUUIDs = [
-        'fff0', 'ffe0', '1101' 
-    ];
-
-    for (const service of services) {
-        const serviceUuidShort = service.uuid.substring(4, 8).toLowerCase();
-        
-        // Prioritize known printer services
-        const isTargetService = targetServiceUUIDs.includes(serviceUuidShort);
-        
-        if (isTargetService || true) { // Check all, but prioritize
-            try {
-                const characteristics = await service.getCharacteristics();
-                for (const characteristic of characteristics) {
-                    if (characteristic.properties.write || characteristic.properties.writeWithoutResponse) {
-                        console.log('Found writable characteristic:', characteristic.uuid);
-                        
-                        // CRITICAL FIX: Chunk size reduced to 20 bytes. 
-                        // Cheap Bluetooth modules crash if sent >20 bytes at once.
-                        const chunkSize = 20; 
-                        for (let i = 0; i < data.length; i += chunkSize) {
-                            const chunk = data.slice(i, i + chunkSize);
-                            await characteristic.writeValue(chunk);
-                            
-                            // CRITICAL FIX: 30ms delay between chunks prevents buffer overflow
-                            await new Promise(resolve => setTimeout(resolve, 30)); 
-                        }
-                        return; // Success!
-                    }
-                }
-            } catch (e) {
-                console.warn('Could not read characteristics for service:', service.uuid, e);
-            }
-        }
-    }
-    
-    throw new Error('No writable characteristic found. Printer may not be supported.');
-}
-
-// Helper function to chunk text for 58mm width
-function chunkText(text, charsPerLine) {
-    const chunks = [];
-    for (let i = 0; i < text.length; i += charsPerLine) {
-        chunks.push(text.substring(i, i + charsPerLine));
-    }
-    return chunks;
-}
-
-// Advanced: Convert QR image to bitmap for thermal printer
-async function imageToESCPOS(imageUrl) {
-    // Create canvas to process image
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
-    
-    return new Promise((resolve, reject) => {
-        img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-            
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const commands = [];
-            
-            // Convert to bitmap format for ESC/POS
-            // This is a simplified version - production needs proper dithering
-            const width = canvas.width;
-            const height = canvas.height;
-            
-            // ESC * m nL nH - Bitmap mode
-            commands.push(0x1B, 0x2A, 0x01, width & 0xFF, (width >> 8) & 0xFF);
-            
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const idx = (y * width + x) * 4;
-                    const r = imageData.data[idx];
-                    const g = imageData.data[idx + 1];
-                    const b = imageData.data[idx + 2];
-                    const brightness = (r + g + b) / 3;
-                    commands.push(brightness < 128 ? 0xFF : 0x00);
-                }
-                commands.push(0x0A); // Line feed after each row
-            }
-            
-            resolve(new Uint8Array(commands));
-        };
-        img.onerror = reject;
-        img.src = imageUrl;
-    });
 }
 
 function stringToBytes(str) {
@@ -542,35 +625,12 @@ function stringToBytes(str) {
     return bytes;
 }
 
-// Send Data to Printer
-async function sendToPrinter(data) {
-    const services = await state.printer.getPrimaryServices();
-    
-    for (const service of services) {
-        const characteristics = await service.getCharacteristics();
-        
-        for (const characteristic of characteristics) {
-            if (characteristic.properties.write || characteristic.properties.writeWithoutResponse) {
-                // Split data into chunks (max 512 bytes per write)
-                const chunkSize = 512;
-                for (let i = 0; i < data.length; i += chunkSize) {
-                    const chunk = data.slice(i, i + chunkSize);
-                    await characteristic.writeValue(chunk);
-                }
-                return;
-            }
-        }
-    }
-    
-    throw new Error('No writable characteristic found');
-}
-
-// Templates
+// ══════════════════════════════════════════════════════════════════════════════
+// TEMPLATES (Local Storage)
+// ══════════════════════════════════════════════════════════════════════════════
 function loadTemplates() {
     const saved = localStorage.getItem('qr-templates');
-    if (saved) {
-        state.templates = JSON.parse(saved);
-    }
+    if (saved) state.templates = JSON.parse(saved);
 }
 
 function saveTemplates() {
@@ -585,7 +645,6 @@ function saveTemplate() {
         bottomText: state.qrData.bottomText,
         createdAt: new Date().toLocaleDateString()
     };
-
     state.templates.unshift(template);
     saveTemplates();
     renderTemplates();
@@ -594,12 +653,10 @@ function saveTemplate() {
 
 function renderTemplates() {
     if (state.templates.length === 0) {
-        elements.displays.templatesList.innerHTML = `
-            <p class="empty-state">No saved templates yet. Generate a QR code to save as template.</p>
-        `;
+        elements.displays.templatesList.innerHTML = `<p class="empty-state">No saved templates yet. Generate a QR code to save as template.</p>`;
         return;
     }
-
+    
     elements.displays.templatesList.innerHTML = state.templates.map(t => `
         <div class="template-item" data-id="${t.id}">
             <div class="template-content">
@@ -609,8 +666,7 @@ function renderTemplates() {
             <button class="template-delete" data-id="${t.id}">🗑️</button>
         </div>
     `).join('');
-
-    // Add click handlers
+    
     document.querySelectorAll('.template-item').forEach(item => {
         item.addEventListener('click', (e) => {
             if (e.target.classList.contains('template-delete')) return;
@@ -624,7 +680,7 @@ function renderTemplates() {
             }
         });
     });
-
+    
     document.querySelectorAll('.template-delete').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -635,38 +691,4 @@ function renderTemplates() {
             showToast('Template deleted', 'success');
         });
     });
-}
-
-// Reset Form
-function resetForm() {
-    elements.inputs.title.value = '';
-    elements.inputs.content.value = '';
-    elements.inputs.bottomText.value = '';
-    elements.displays.title.textContent = '';
-    elements.displays.bottom.textContent = '';
-    elements.displays.qrCode.innerHTML = '';
-    elements.buttons.saveTemplate.style.display = 'none';
-}
-
-// Toast Notification
-function showToast(message, type = '') {
-    elements.toast.textContent = message;
-    elements.toast.className = 'toast show ' + type;
-    
-    setTimeout(() => {
-        elements.toast.className = 'toast';
-    }, 3000);
-}
-
-// Service Worker Registration
-function registerServiceWorker() {
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('sw.js')
-            .then(registration => {
-                console.log('SW registered:', registration);
-            })
-            .catch(error => {
-                console.log('SW registration failed:', error);
-            });
-    }
 }

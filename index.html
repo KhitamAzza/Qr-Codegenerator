@@ -1,14 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📱</text></svg>">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#2563eb">
     <meta name="description" content="QR Code Generator with Bluetooth Thermal Printer Support">
     <title>QR Code Generator</title>
-    <link rel="manifest" href="manifest.json">
-    <link rel="apple-touch-icon" href="icons/icon-192.png">
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 </head>
@@ -20,74 +16,108 @@
             <p class="subtitle">Generate & Print QR Codes</p>
         </header>
 
-        <!-- Step 1: Input Form -->
-        <section id="step-input" class="step active">
-            <div class="card">
-                <h2>📝 Create QR Code</h2>
-                
-                <div class="form-group">
-                    <label for="title">Title (Optional)</label>
-                    <input type="text" id="title" placeholder="Enter title here...">
+        <!-- Navigation Tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="manual">✍️ Manual Entry</button>
+            <button class="tab-btn" data-tab="questions">📋 Questions Sheet</button>
+        </div>
+
+        <!-- Tab 1: Manual Entry (Existing functionality) -->
+        <section id="tab-manual" class="tab-content active">
+            <!-- Step 1: Input Form -->
+            <section id="step-input" class="step active">
+                <div class="card">
+                    <h2>📝 Create QR Code</h2>
+                    
+                    <div class="form-group">
+                        <label for="title">Title (Optional)</label>
+                        <input type="text" id="title" placeholder="Enter title here...">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="qr-content">QR Code Content *</label>
+                        <textarea id="qr-content" rows="3" placeholder="Enter URL, text, or any content..."></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="bottom-text">Bottom Text (Optional)</label>
+                        <input type="text" id="bottom-text" placeholder="Enter bottom text here...">
+                    </div>
+
+                    <div class="form-actions">
+                        <button id="btn-generate" class="btn btn-primary">
+                             Generate QR Code
+                        </button>
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label for="qr-content">QR Code Content *</label>
-                    <textarea id="qr-content" rows="3" placeholder="Enter URL, text, or any content..."></textarea>
-                </div>
-
-                <div class="form-group">
-                    <label for="bottom-text">Bottom Text (Optional)</label>
-                    <input type="text" id="bottom-text" placeholder="Enter bottom text here...">
-                </div>
-
-                <div class="form-actions">
-                    <button id="btn-generate" class="btn btn-primary">
-                        ⚡ Generate QR Code
+                <!-- Templates Section -->
+                <div class="card templates-card">
+                    <h3>📋 Saved Templates</h3>
+                    <div id="templates-list" class="templates-list">
+                        <p class="empty-state">No saved templates yet. Generate a QR code to save as template.</p>
+                    </div>
+                    <button id="btn-save-template" class="btn btn-secondary" style="display:none;">
+                        💾 Save as Template
                     </button>
                 </div>
-            </div>
+            </section>
 
-            <!-- Templates Section -->
-            <div class="card templates-card">
-                <h3>📋 Saved Templates</h3>
-                <div id="templates-list" class="templates-list">
-                    <p class="empty-state">No saved templates yet. Generate a QR code to save as template.</p>
+            <!-- Step 2: QR Preview -->
+            <section id="step-preview" class="step">
+                <div class="card">
+                    <h2>📱 QR Code Preview</h2>
+                    
+                    <div id="qr-preview-container" class="qr-preview">
+                        <div id="qr-title-display" class="qr-title"></div>
+                        <div id="qr-code-display"></div>
+                        <div id="qr-bottom-display" class="qr-bottom"></div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button id="btn-edit" class="btn btn-secondary">
+                            ✏️ Edit
+                        </button>
+                        <button id="btn-print" class="btn btn-primary">
+                            ️ Print via Bluetooth
+                        </button>
+                    </div>
                 </div>
-                <button id="btn-save-template" class="btn btn-secondary" style="display:none;">
-                    💾 Save as Template
-                </button>
+            </section>
+        </section>
+
+        <!-- Tab 2: Questions from Google Sheet -->
+        <section id="tab-questions" class="tab-content">
+            <div class="card">
+                <h2>📋 Questions from Google Sheet</h2>
+                
+                <div class="form-actions">
+                    <button id="btn-refresh-questions" class="btn btn-primary">
+                        🔄 Refresh Questions
+                    </button>
+                    <button id="btn-clear-cache" class="btn btn-secondary">
+                        🗑️ Clear Print Cache
+                    </button>
+                </div>
+
+                <div id="questions-loading" class="loading-state" style="display:none;">
+                    <div class="loading"></div>
+                    <p>Loading questions...</p>
+                </div>
+
+                <div id="questions-list" class="questions-list">
+                    <p class="empty-state">Click "Refresh Questions" to load from Google Sheet</p>
+                </div>
             </div>
         </section>
 
-        <!-- Step 2: QR Preview -->
-        <section id="step-preview" class="step">
-            <div class="card">
-                <h2>📱 QR Code Preview</h2>
-                
-                <div id="qr-preview-container" class="qr-preview">
-                    <div id="qr-title-display" class="qr-title"></div>
-                    <div id="qr-code-display"></div>
-                    <div id="qr-bottom-display" class="qr-bottom"></div>
-                </div>
-
-                <div class="form-actions">
-                    <button id="btn-edit" class="btn btn-secondary">
-                        ✏️ Edit
-                    </button>
-                    <button id="btn-print" class="btn btn-primary">
-                        ️ Print via Bluetooth
-                    </button>
-                </div>
-            </div>
-        </section>
-
-        <!-- Step 3: Printer Connection -->
+        <!-- Printer Connection Section (Shared) -->
         <section id="step-printer" class="step">
             <div class="card">
                 <h2>🔵 Bluetooth Printer</h2>
                 
                 <div id="printer-status" class="printer-status">
-                    <div class="status-icon">🔍</div>
+                    <div class="status-icon"></div>
                     <p>Searching for Bluetooth thermal printer...</p>
                 </div>
 
@@ -100,7 +130,7 @@
                         🔗 Connect Printer
                     </button>
                     <button id="btn-print-confirm" class="btn btn-success" style="display:none;">
-                        🖨️ Print Now
+                        ️ Print Now
                     </button>
                 </div>
             </div>
@@ -110,12 +140,12 @@
         <section id="step-complete" class="step">
             <div class="card">
                 <h2>✅ Print Complete!</h2>
-                <div class="success-icon">🎉</div>
+                <div class="success-icon"></div>
                 <p>Your QR code has been printed successfully.</p>
                 
                 <div class="form-actions">
                     <button id="btn-print-another" class="btn btn-primary">
-                        🔄 Print Another (Same Code)
+                         Print Another (Same Code)
                     </button>
                     <button id="btn-new-qr" class="btn btn-secondary">
                         ➕ Create New QR Code

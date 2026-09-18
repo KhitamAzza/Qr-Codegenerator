@@ -18,11 +18,11 @@
 
         <!-- Navigation Tabs -->
         <div class="tabs">
-            <button class="tab-btn active" data-tab="manual">✍️ Manual Entry</button>
-            <button class="tab-btn" data-tab="questions">📋 Questions Sheet</button>
+            <button class="tab-btn active" data-tab="manual">✍️ Manual</button>
+            <button class="tab-btn" data-tab="codes">📋 Sheet Codes</button>
         </div>
 
-        <!-- Tab 1: Manual Entry (Existing functionality) -->
+        <!-- Tab 1: Manual Entry -->
         <section id="tab-manual" class="tab-content active">
             <!-- Step 1: Input Form -->
             <section id="step-input" class="step active">
@@ -46,7 +46,7 @@
 
                     <div class="form-actions">
                         <button id="btn-generate" class="btn btn-primary">
-                             Generate QR Code
+                            ⚡ Generate QR Code
                         </button>
                     </div>
                 </div>
@@ -79,34 +79,34 @@
                             ✏️ Edit
                         </button>
                         <button id="btn-print" class="btn btn-primary">
-                            ️ Print via Bluetooth
+                            🖨️ Print via Bluetooth
                         </button>
                     </div>
                 </div>
             </section>
         </section>
 
-        <!-- Tab 2: Questions from Google Sheet -->
-        <section id="tab-questions" class="tab-content">
+        <!-- Tab 2: Codes from Sheet -->
+        <section id="tab-codes" class="tab-content">
             <div class="card">
-                <h2>📋 Questions from Google Sheet</h2>
+                <h2>📋 Codes from Google Sheet</h2>
                 
                 <div class="form-actions">
-                    <button id="btn-refresh-questions" class="btn btn-primary">
-                        🔄 Refresh Questions
+                    <button id="btn-refresh-codes" class="btn btn-primary">
+                        🔄 Refresh Codes
                     </button>
                     <button id="btn-clear-cache" class="btn btn-secondary">
-                        🗑️ Clear Print Cache
+                        🗑️ Clear Cache
                     </button>
                 </div>
 
-                <div id="questions-loading" class="loading-state" style="display:none;">
+                <div id="codes-loading" class="loading-state" style="display:none;">
                     <div class="loading"></div>
-                    <p>Loading questions...</p>
+                    <p>Loading codes...</p>
                 </div>
 
-                <div id="questions-list" class="questions-list">
-                    <p class="empty-state">Click "Refresh Questions" to load from Google Sheet</p>
+                <div id="codes-list" class="questions-list">
+                    <p class="empty-state">Click "Refresh Codes" to load from Column A</p>
                 </div>
             </div>
         </section>
@@ -117,7 +117,7 @@
                 <h2>🔵 Bluetooth Printer</h2>
                 
                 <div id="printer-status" class="printer-status">
-                    <div class="status-icon"></div>
+                    <div class="status-icon">🔍</div>
                     <p>Searching for Bluetooth thermal printer...</p>
                 </div>
 
@@ -130,7 +130,7 @@
                         🔗 Connect Printer
                     </button>
                     <button id="btn-print-confirm" class="btn btn-success" style="display:none;">
-                        ️ Print Now
+                        🖨️ Print Now
                     </button>
                 </div>
             </div>
@@ -140,12 +140,12 @@
         <section id="step-complete" class="step">
             <div class="card">
                 <h2>✅ Print Complete!</h2>
-                <div class="success-icon"></div>
+                <div class="success-icon">🎉</div>
                 <p>Your QR code has been printed successfully.</p>
                 
                 <div class="form-actions">
                     <button id="btn-print-another" class="btn btn-primary">
-                         Print Another (Same Code)
+                        🔄 Print Another (Same Code)
                     </button>
                     <button id="btn-new-qr" class="btn btn-secondary">
                         ➕ Create New QR Code

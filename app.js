@@ -210,47 +210,56 @@ function renderCodesList() {
         return;
     }
     
-    elements.codes.list.innerHTML = state.codes.map(code => {
-        const printed = isPrinted(code);
-        const printInfo = printed ? state.printCache[code] : null;
-        
-        return `
-            <div class="question-item ${printed ? 'printed' : ''}" data-code="${code}">
-                <div class="question-content">
-                    <div class="question-id"><strong>${code}</strong> ${printed ? '<span class="printed-badge">✓ Printed</span>' : ''}</div>
-                    ${printInfo ? `<div class="print-info"><small>Printed: ${new Date(printInfo.printedAt).toLocaleTimeString()}</small></div>` : ''}
-                </div>
-                <div class="question-actions">
-                    <button class="btn btn-sm btn-primary print-code-btn" data-code="${code}">
-                        ${printed ? '🔄 Reprint' : '🖨️ Print'}
-                    </button>
-                </div>
+    elements.codes.list.innerHTML = state.codes.map((code, index) => {
+    const printed = isPrinted(code);
+    const printInfo = printed ? state.printCache[code] : null;
+    
+    return `
+        <div class="question-item ${printed ? 'printed' : ''}" data-code="${code}">
+            <div class="question-content">
+                <div class="question-id"><strong>${code}</strong> ${printed ? '<span class="printed-badge">✓ Printed</span>' : ''}</div>
+                ${printInfo ? `<div class="print-info"><small>Printed: ${new Date(printInfo.printedAt).toLocaleTimeString()}</small></div>` : ''}
             </div>
-        `;
-    }).join('');
+            <div class="question-actions">
+                <button class="btn btn-sm btn-primary print-code-btn" data-code="${code}" data-index="${index}">
+                    ${printed ? '🔄 Reprint' : '🖨️ Print'}
+                </button>
+            </div>
+        </div>
+    `;
+}).join('');
     
     document.querySelectorAll('.print-code-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const code = e.target.dataset.code;
-            triggerInstantPrint(code);
-        });
+    btn.addEventListener('click', (e) => {
+        const code = e.target.dataset.code;
+        const index = parseInt(e.target.dataset.index, 10);
+        triggerInstantPrint(code, index);
     });
+});
 }
 
 // NEW: Instant Print Logic (No scrolling, no page navigation if connected)
-function triggerInstantPrint(code) {
+function triggerInstantPrint(code, index) {
     state.currentCode = code;
     
-    // Get EXACTLY what the user selected. No auto-appending the code.
+    // Get the existing header template (optional)
     const template = elements.inputs.headerTemplate.value;
-    const header = template === 'custom' ? elements.inputs.customHeader.value.trim() : template;
+    let header = template === 'custom' ? elements.inputs.customHeader.value.trim() : template;
+    
+    // ★ Add the sequential number (1, 2, 3, ...) at the top
+    const printNumber = index + 1;          // because index starts at 0
+    header = String(printNumber);           // only the number, e.g. "1", "2", "3"
+    
+    // If you want to keep your template AND add the number, use this instead:
+    // header = printNumber + (header ? ' ' + header : '');
     
     state.qrData = {
-        title: header,       // Exactly the template string (or empty)
-        content: code,       // QR code is JUST the code
+        title: header,       // This becomes the top section printed on paper
+        content: code,       // QR code still contains the actual sheet code
         bottomText: ''
     };
     
+        
     // Prepare hidden/visible canvas for printing
     elements.displays.title.textContent = header;
     elements.displays.bottom.textContent = '';
